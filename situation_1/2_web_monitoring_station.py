@@ -137,7 +137,9 @@ HTML_TEMPLATE = """
                 }
             });
             update();
+            fetchSettledClaims();
             setInterval(update, 1000);
+            setInterval(fetchSettledClaims, 3000);
             setInterval(() => { document.getElementById('global-clock').innerText = new Date().toLocaleTimeString(); }, 1000);
         }
 
@@ -272,10 +274,17 @@ HTML_TEMPLATE = """
                             <div class="event-info">
                                 <div class="ue-tag">設備 ID: ${uid}</div>
                                 <div class="event-title" style="color: ${tColor}">${tIcon} ${tTitle} (Level ${fromLvl} → Level ${toLvl})</div>
-                                <div class="event-meta">
+                                <div class="event-meta" style="margin-bottom: 10px;">
                                     <b>發生時間：</b> ${eventTime}<br>
                                     <b>判讀依據：</b> ${desc}<br>
                                 </div>
+                                ${ (toLvl === 'Level 3' || toLvl === 'Level 4') ? `
+                                <div style="display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap;">
+                                    <button class="btn" style="background: #0081cb; font-size: 0.8em;" onclick="notifyInsurance(${uid}, '住院通知', '意外險', this)">📝 發布住院通知</button>
+                                    <button class="btn" style="background: #10b981; font-size: 0.8em; display: none;" id="btn-diag-${cardId}" onclick="uploadReport(${uid}, 'DIAGNOSIS', '意外傷害診療報告', this)">📄 上傳診療報告</button>
+                                    <button class="btn" style="background: #f59e0b; font-size: 0.8em; display: none;" id="btn-follow-${cardId}" onclick="uploadReport(${uid}, 'FOLLOWUP', '預計三個月復健計畫', this)">📅 上傳複診計畫</button>
+                                </div>
+                                ` : '' }
                             </div>
                             <div class="snapshot-grid">
                                 <div class="snapshot-box"><span class="snapshot-label">心率歷史軌跡</span><canvas id="hr-${cardId}"></canvas></div>
@@ -300,6 +309,93 @@ HTML_TEMPLATE = """
                     scales: { x: { display: false }, y: { min: min, max: max, ticks: { display: false }, grid: { display: false } } }
                 }
             });
+        }
+        
+        let seenSettledClaims = new Set();
+        async function fetchSettledClaims() {
+            try {
+                const res = await fetch(`http://${window.location.hostname}:5002/api/insurance/claims`);
+                const claims = await res.json();
+                const settledClaims = claims.filter(c => c.status === 'SETTLED');
+                
+                settledClaims.forEach(c => {
+                    if (!seenSettledClaims.has(c.id)) {
+                        seenSettledClaims.add(c.id);
+                        
+                        const html = `
+                            <div class="event-card border-success" style="border-left-color: #10b981;">
+                                <div class="event-info" style="grid-column: 1 / span 2;">
+                                    <div class="ue-tag" style="background: #10b981;">設備 ID: ${c.uid}</div>
+                                    <div style="font-weight: bold; color: #10b981; font-size: 1.2em; margin-bottom: 5px;">✅ 理賠結算完成 (保險中心)</div>
+                                    <div style="font-size: 0.9em; color: #94a3b8; line-height: 1.6; background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 8px; margin-top: 10px;">
+                                        <div style="display: flex; justify-content: space-between;"><span>理賠單號：</span><b>#CLM-${c.id}</b></div>
+                                        <div style="display: flex; justify-content: space-between;"><span>險種類別：</span><b>${c.type}</b></div>
+                                        <div style="display: flex; justify-content: space-between;"><span>結算時間：</span><b>${c.d_at}</b></div>
+                                        <hr style="border: 0; border-top: 1px solid #334155; margin: 10px 0;">
+                                        <div style="display: flex; justify-content: space-between;"><span>核准住院天數：</span><b>${c.days} 天</b></div>
+                                        <div style="display: flex; justify-content: space-between; font-size: 1.2em; color: #10b981; margin-top: 5px;">
+                                            <span>理賠總撥款：</span><b>$ ${c.amount.toLocaleString()}</b>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        document.getElementById('global-event-list').insertAdjacentHTML('afterbegin', html);
+                    }
+                });
+            } catch(e) {}
+        }
+
+        async function notifyInsurance(uid, noticeType, insType, btnElement) {
+            btnElement.disabled = true;
+            btnElement.innerText = "處理中...";
+            try {
+                const res = await fetch(`http://${window.location.hostname}:5002/api/insurance/hospitalize`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({uid: uid, type: insType})
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    btnElement.innerText = "✅ 已發布住院通知";
+                    btnElement.style.background = "#475569";
+                    
+                    // 顯示上傳報告按鈕
+                    const parent = btnElement.parentElement;
+                    const diagBtn = parent.children[1];
+                    const followBtn = parent.children[2];
+                    diagBtn.style.display = "inline-block";
+                    diagBtn.setAttribute("data-claim-id", data.claim_id);
+                    followBtn.style.display = "inline-block";
+                    followBtn.setAttribute("data-claim-id", data.claim_id);
+                }
+            } catch(e) {
+                alert("通知保險端失敗：" + e);
+                btnElement.disabled = false;
+                btnElement.innerText = "📝 發布住院通知";
+            }
+        }
+
+        async function uploadReport(uid, rtype, content, btnElement) {
+            const claimId = btnElement.getAttribute("data-claim-id");
+            btnElement.disabled = true;
+            btnElement.innerText = "上傳中...";
+            try {
+                const res = await fetch(`http://${window.location.hostname}:5002/api/insurance/report`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({uid: uid, claim_id: claimId, report_type: rtype, content: content})
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    btnElement.innerText = `✅ 已上傳報告`;
+                    btnElement.style.background = "#475569";
+                }
+            } catch(e) {
+                alert("上傳報告失敗：" + e);
+                btnElement.disabled = false;
+                btnElement.innerText = "重新上傳";
+            }
         }
         
         init();

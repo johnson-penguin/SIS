@@ -59,6 +59,39 @@ def init_db():
         hr_trend TEXT,
         hrv_trend TEXT
     )''')
+    
+    # 3. 保險理賠表 (Insurance Claims)
+    cur.execute('''CREATE TABLE IF NOT EXISTS insurance_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        insurance_type TEXT,
+        status TEXT, 
+        hospitalized_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        discharged_at DATETIME,
+        days INTEGER DEFAULT 0,
+        amount REAL DEFAULT 0.0
+    )''')
+
+    # 4. 醫療報告表 (Medical Reports)
+    cur.execute('''CREATE TABLE IF NOT EXISTS medical_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        claim_id INTEGER,
+        report_type TEXT, 
+        content TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+
+    # 5. 保單與回饋表 (Insurance Policies)
+    cur.execute('''CREATE TABLE IF NOT EXISTS insurance_policies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        policy_type TEXT,
+        status TEXT,
+        quality_feedback TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
     conn.commit()
     return conn
 
@@ -110,10 +143,12 @@ def analyze_risk_logic(uid, hr, hrv, spo2, speed):
         lvl = "Level 0"
         if (hr > 140 or hr < 40) or spo2 < 90:
             lvl = "Level 4"
-            state["needs_ack"] = True  # L4 立即警報，無視 10 分鐘 ACK
+            if not state["needs_ack"] and (now - state["last_ack_time"] > 60):
+                state["needs_ack"] = True  # L4 立即警報，加入 60 秒冷卻
         elif anomaly_elapsed > 30.0 and static_elapsed > 15.0:
             lvl = "Level 3"
-            state["needs_ack"] = True  # L3 立即警報，無視 10 分鐘 ACK
+            if not state["needs_ack"] and (now - state["last_ack_time"] > 60):
+                state["needs_ack"] = True  # L3 立即警報，加入 60 秒冷卻
         elif anomaly_elapsed > 60.0:
             lvl = "Level 2"
             # L2 仍維持 10 分鐘 ACK 延遲邏輯
@@ -166,6 +201,113 @@ def ack_event():
         print(f"\n>>> [UI 互動] 設備 ID:{uid} 已回覆。提醒功能將暫停 1 分鐘。\n")
         return jsonify({"status": "success", "message": "ACK recorded"})
     return jsonify({"status": "error", "message": "UE not found"}), 404
+
+# --- 保險相關 API ---
+@app.route('/api/insurance/hospitalize', methods=['POST'])
+def insurance_hospitalize():
+    data = request.json
+    uid = data.get('uid')
+    ins_type = data.get('type', '意外險')
+    try:
+        cur = db_conn.cursor()
+        # 建立理賠單與住院通知
+        cur.execute("INSERT INTO insurance_claims (device_id, insurance_type, status) VALUES (?, ?, 'HOSPITALIZED')", (uid, ins_type))
+        claim_id = cur.lastrowid
+        cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, ?, 'NOTICE', '管理中心確認發布意外事件與住院通知')", (uid, claim_id))
+        db_conn.commit()
+        return jsonify({"status": "success", "claim_id": claim_id})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/claims', methods=['GET'])
+def get_insurance_claims():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("SELECT id, device_id, insurance_type, status, hospitalized_at, discharged_at, days, amount FROM insurance_claims ORDER BY id DESC")
+        claims = [{"id": r[0], "uid": r[1], "type": r[2], "status": r[3], "h_at": r[4], "d_at": r[5], "days": r[6], "amount": r[7]} for r in cur.fetchall()]
+        
+        cur.execute("SELECT claim_id, report_type, content, created_at FROM medical_reports")
+        reports = cur.fetchall()
+        for c in claims:
+            c["reports"] = [{"type": r[1], "content": r[2], "time": r[3]} for r in reports if r[0] == c["id"]]
+            
+        return jsonify(claims)
+    except Exception as e:
+        return jsonify([])
+
+@app.route('/api/insurance/report', methods=['POST'])
+def add_medical_report():
+    data = request.json
+    uid = data.get('uid')
+    claim_id = data.get('claim_id')
+    rtype = data.get('report_type')
+    content = data.get('content')
+    try:
+        cur = db_conn.cursor()
+        cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, ?, ?, ?)", (uid, claim_id, rtype, content))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/discharge', methods=['POST'])
+def insurance_discharge():
+    data = request.json
+    claim_id = data.get('claim_id')
+    days = data.get('days', 0)
+    amount = data.get('amount', 0.0)
+    try:
+        cur = db_conn.cursor()
+        cur.execute("UPDATE insurance_claims SET status='SETTLED', days=?, amount=?, discharged_at=CURRENT_TIMESTAMP WHERE id=?", (days, amount, claim_id))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/apply', methods=['POST'])
+def apply_insurance():
+    data = request.json
+    uid = data.get('uid')
+    content = data.get('report_content', '長期健康分析報告')
+    try:
+        cur = db_conn.cursor()
+        # 把長期報告存成一個沒綁 claim_id 的醫療報告
+        cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, 0, 'LONG_TERM', ?)", (uid, content))
+        # 建立一筆 pending 保單申請
+        cur.execute("INSERT INTO insurance_policies (device_id, policy_type, status) VALUES (?, '長期健康險', 'PENDING')", (uid,))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/quality', methods=['POST'])
+def update_quality():
+    data = request.json
+    policy_id = data.get('policy_id')
+    feedback = data.get('feedback')
+    status = data.get('status', 'ACTIVE')
+    try:
+        cur = db_conn.cursor()
+        cur.execute("UPDATE insurance_policies SET quality_feedback=?, status=? WHERE id=?", (feedback, status, policy_id))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/policies', methods=['GET'])
+def get_policies():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("""
+            SELECT p.id, p.device_id, p.policy_type, p.status, p.quality_feedback, p.created_at, m.content
+            FROM insurance_policies p
+            LEFT JOIN medical_reports m ON m.device_id = p.device_id AND m.report_type = 'LONG_TERM' AND m.claim_id = 0
+            ORDER BY p.id DESC
+        """)
+        res = [{"id": r[0], "uid": r[1], "type": r[2], "status": r[3], "feedback": r[4], "created_at": r[5], "report": r[6]} for r in cur.fetchall()]
+        return jsonify(res)
+    except:
+        return jsonify([])
 
 def start_api_server():
     # 運行在 5002 port，避免與前端 Web 的 5000 / 5001 衝突

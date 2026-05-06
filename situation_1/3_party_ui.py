@@ -128,6 +128,34 @@ HTML_TEMPLATE = """
             document.getElementById('ems-o2').innerText = d.o2.toFixed(1) + '%';
 
             // 狀態機邏輯：漸進式通報
+            if (d.hospitalized) {
+                sysStatus.className = "sys-status";
+                sysStatus.style.backgroundColor = "rgba(16, 185, 129, 0.2)";
+                sysStatus.style.borderColor = "#10b981";
+                sysStatus.style.color = "#10b981";
+                sysStatus.innerText = `事故已處置 - UE ${UID} 住院中`;
+                
+                // 清空戰情看板的警報顏色，並留下紀錄
+                pFamily.className = "panel active";
+                pNurse.className = "panel active";
+                pEms.className = "panel"; 
+                
+                document.getElementById('overlay-ems').innerText = "勤務結束";
+                
+                document.getElementById('msg-family').innerHTML = `<b>系統歸檔紀錄</b><br><br>✅ 狀況解除：<br>UE ${UID} 已順利抵達醫院並辦理住院，醫療團隊已接手處理，保險理賠程序已啟動。`;
+                document.getElementById('msg-family').style.borderLeftColor = "#10b981";
+                
+                document.getElementById('status-nurse').innerText = "已轉交院方";
+                document.getElementById('status-nurse').style.color = "#10b981";
+                document.getElementById('msg-nurse').innerHTML = "<b>處理歸檔：</b><br>病患已安排住院，現場勤務已結束。後續由醫院照護團隊接手。";
+                document.getElementById('msg-nurse').style.borderLeftColor = "#10b981";
+                return;
+            } else {
+                sysStatus.style.backgroundColor = "";
+                sysStatus.style.borderColor = "";
+                sysStatus.style.color = "";
+            }
+
             if (d.lvl === "Level 3") {
                 sysStatus.className = "sys-status status-l3";
                 sysStatus.innerText = "高風險異常 (Level 3) - 已通知照護端";
@@ -170,7 +198,12 @@ HTML_TEMPLATE = """
                 pNurse.className = "panel";
                 pEms.className = "panel";
                 
+                document.getElementById('overlay-ems').innerText = "未達通報標準 (Locked)";
+                document.getElementById('msg-family').innerHTML = `<b>系統自動簡訊</b><br><br>尚無異常通知。`;
                 document.getElementById('msg-family').style.borderLeftColor = "#3b82f6";
+                
+                document.getElementById('status-nurse').innerText = "";
+                document.getElementById('msg-nurse').innerHTML = "等待醫療介入指示...";
                 document.getElementById('msg-nurse').style.borderLeftColor = "#f59e0b";
             }
         }
@@ -205,11 +238,18 @@ def get_status():
             FROM telemetry WHERE device_id = ? ORDER BY id DESC LIMIT 1
         ''', (TARGET_UE_ID,))
         r = cur.fetchone()
+        
+        cur.execute("SELECT status FROM insurance_claims WHERE device_id = ? ORDER BY id DESC LIMIT 1", (TARGET_UE_ID,))
+        claim = cur.fetchone()
+        is_hospitalized = False
+        if claim and claim[0] == 'HOSPITALIZED':
+            is_hospitalized = True
+            
         conn.close()
         if r:
-            return jsonify({"lvl": r[0], "hr": r[1], "o2": r[2], "spd": r[3]})
+            return jsonify({"lvl": r[0], "hr": r[1], "o2": r[2], "spd": r[3], "hospitalized": is_hospitalized})
     except: pass
-    return jsonify({"lvl": "Level 0", "hr": 0, "o2": 0, "spd": 0})
+    return jsonify({"lvl": "Level 0", "hr": 0, "o2": 0, "spd": 0, "hospitalized": False})
 
 if __name__ == '__main__':
     # 運行在 5003 端口，避免與其他網頁衝突

@@ -78,6 +78,19 @@ HTML_TEMPLATE = """
 
     <div class="main-chart-box"><canvas id="realtime-chart"></canvas></div>
 
+    <div class="event-section" style="border-top: none; padding-top: 0; margin-bottom: 30px;">
+        <h2 style="margin-bottom: 20px; color: #38bdf8;">🛡️ 我的保險專區</h2>
+        <div style="background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <span style="font-size: 1.1em;">長期健康分析與保單服務</span>
+                <button class="ack-btn" style="margin-top: 0; padding: 10px 20px; background: #10b981; font-size: 1em;" onclick="applyInsurance(this)">📊 匯出長期報告並申購</button>
+            </div>
+            <div id="policy-list" style="display: flex; flex-direction: column; gap: 10px;">
+                <div style="color: #94a3b8; font-size: 0.9em;">尚未申購任何保單。</div>
+            </div>
+        </div>
+    </div>
+
     <div class="event-section">
         <h2 style="margin-bottom: 20px;">📜 事件追溯紀錄 (Demo 專用展開)</h2>
         <div class="event-list" id="event-list"></div>
@@ -102,7 +115,11 @@ HTML_TEMPLATE = """
                 options: { maintainAspectRatio: false, animation: false, scales: { y: { min: 20, max: 160, grid: { color: '#334155' } }, x: { grid: { display: false } } }, plugins: { legend: { labels: { color: '#f8fafc' } } } }
             });
             update();
+            fetchPolicies();
+            fetchClaims();
             setInterval(update, 1000);
+            setInterval(fetchPolicies, 3000);
+            setInterval(fetchClaims, 3000);
             setInterval(() => { document.getElementById('clock').innerText = new Date().toLocaleTimeString(); }, 1000);
         }
 
@@ -247,6 +264,97 @@ HTML_TEMPLATE = """
         function renderSmallChart(id, data, color, min, max) {
             new Chart(document.getElementById(id), { type: 'line', data: { labels: new Array(data.length).fill(''), datasets: [{ borderColor: color, data: data, pointRadius: 2, fill: false, tension: 0.2, borderWidth: 2 }] }, options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { min: min, max: max, ticks: { display: false }, grid: { display: false } } } } });
         }
+        
+        async function applyInsurance(btn) {
+            btn.disabled = true;
+            btn.innerText = "申請中...";
+            try {
+                let recentData = dataBuffer.slice(-50);
+                let avgHr = dataBuffer.length ? (dataBuffer.reduce((acc, v) => acc + v.hr, 0) / dataBuffer.length).toFixed(1) : "N/A";
+                let reportObj = {
+                    text: `長期健康分析報告\n總採樣數：${dataBuffer.length}\n平均心率：${avgHr} BPM\n近期活動：正常\n(由系統自動匯出)`,
+                    labels: recentData.map(d => d.time),
+                    hr: recentData.map(d => d.hr),
+                    hrv: recentData.map(d => d.hrv)
+                };
+                
+                await fetch(`http://${window.location.hostname}:5002/api/insurance/apply`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({uid: TARGET_UID, report_content: JSON.stringify(reportObj)})
+                });
+                btn.innerText = "✅ 申請已送出";
+                btn.style.background = "#475569";
+                fetchPolicies();
+            } catch(e) {
+                alert("申請失敗");
+                btn.disabled = false;
+                btn.innerText = "📊 匯出長期報告並申購";
+            }
+        }
+
+        let seenSettledClaims = new Set();
+        async function fetchClaims() {
+            try {
+                const res = await fetch(`http://${window.location.hostname}:5002/api/insurance/claims`);
+                const claims = await res.json();
+                const myClaims = claims.filter(c => c.uid === TARGET_UID && c.status === 'SETTLED');
+                
+                myClaims.forEach(c => {
+                    if (!seenSettledClaims.has(c.id)) {
+                        seenSettledClaims.add(c.id);
+                        
+                        const html = `
+                            <div class="event-card border-success" style="border-left-color: #10b981;">
+                                <div class="event-info" style="grid-column: 1 / span 2;">
+                                    <div style="font-weight: bold; color: #10b981; font-size: 1.2em; margin-bottom: 5px;">✅ 理賠結算明細 (來自保險中心)</div>
+                                    <div style="font-size: 0.9em; color: #94a3b8; line-height: 1.6; background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 8px; margin-top: 10px;">
+                                        <div style="display: flex; justify-content: space-between;"><span>理賠單號：</span><b>#CLM-${c.id}</b></div>
+                                        <div style="display: flex; justify-content: space-between;"><span>險種類別：</span><b>${c.type}</b></div>
+                                        <div style="display: flex; justify-content: space-between;"><span>結算時間：</span><b>${c.d_at}</b></div>
+                                        <hr style="border: 0; border-top: 1px solid #334155; margin: 10px 0;">
+                                        <div style="display: flex; justify-content: space-between;"><span>實際住院天數：</span><b>${c.days} 天</b></div>
+                                        <div style="display: flex; justify-content: space-between; font-size: 1.2em; color: #10b981; margin-top: 5px;">
+                                            <span>核准理賠總額：</span><b>$ ${c.amount.toLocaleString()}</b>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                        document.getElementById('event-list').insertAdjacentHTML('afterbegin', html);
+                    }
+                });
+            } catch(e) {}
+        }
+
+        async function fetchPolicies() {
+            try {
+                const res = await fetch(`http://${window.location.hostname}:5002/api/insurance/policies`);
+                const policies = await res.json();
+                const myPolicies = policies.filter(p => p.uid === TARGET_UID);
+                const listDiv = document.getElementById('policy-list');
+                
+                if (myPolicies.length === 0) return;
+                
+                let html = '';
+                myPolicies.forEach(p => {
+                    let statusColor = p.status === 'PENDING' ? '#f59e0b' : '#10b981';
+                    let statusText = p.status === 'PENDING' ? '審核中' : '生效中';
+                    html += `
+                        <div style="background: #0f172a; padding: 15px; border-radius: 8px; border-left: 4px solid ${statusColor};">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                                <b>${p.type}</b>
+                                <span style="color: ${statusColor}; font-size: 0.9em; font-weight: bold;">${statusText}</span>
+                            </div>
+                            <div style="font-size: 0.9em; color: #cbd5e1;">申請時間：${p.created_at}</div>
+                            ${p.feedback ? `<div style="margin-top: 10px; padding: 10px; background: rgba(56, 189, 248, 0.1); border-radius: 6px; color: #38bdf8; font-size: 0.9em; white-space: pre-wrap;"><b>💌 保險公司定期回饋：</b><br>${p.feedback}</div>` : ''}
+                        </div>
+                    `;
+                });
+                listDiv.innerHTML = html;
+            } catch(e) {}
+        }
+        
         init();
     </script>
 </body>
