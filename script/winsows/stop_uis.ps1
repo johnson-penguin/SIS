@@ -9,7 +9,7 @@ foreach ($port in $ports) {
     $proc = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
     if ($proc) {
         $pidToKill = $proc.OwningProcess
-        Write-Host "偵測到 Port $port (PID: $pidToKill)，正在關閉..." -ForegroundColor Yellow
+        Write-Host "Detecting Port $port (PID: $pidToKill), Killing..." -ForegroundColor Yellow
         Stop-Process -Id $pidToKill -Force -ErrorAction SilentlyContinue
     }
 }

@@ -3,107 +3,333 @@ import struct
 import sqlite3
 import base64
 import time
+import json
+import threading
 from datetime import datetime
-
-# --- 設備註冊表 ---
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+# --- 設備註冊與配置 ---
 DEVICE_REGISTRY = {
     101: {"name": "A_Sensor_1", "decrypt": "XOR"},
-    102: {"name": "A_Sensor_2", "decrypt": "XOR"},
-    201: {"name": "B_Sensor_1", "decrypt": "B64"},
-    202: {"name": "B_Sensor_2", "decrypt": "B64"},
-    203: {"name": "B_Sensor_3", "decrypt": "B64"}
+    201: {"name": "B_Sensor_1", "decrypt": "B64"}
 }
 
-# 狀態追蹤器：紀錄各設備進入異常狀態的時間點，用於判定持續時間
+# 根據要求設定各等級頻率
+LEVEL_INTERVALS = {
+    "Level 0": 10.0,
+    "Level 1": 5.0,
+    "Level 2": 3.0,
+    "Level 3": 1.0,
+    "Level 4": 1.0
+}
+
+# 全域狀態追蹤 (儲存在記憶體中)
 UE_STATES = {}
+LAST_PRINT_TIME = {}
 
 def init_db():
-    """初始化資料庫並建立包含新欄位的表"""
-    conn = sqlite3.connect('iot_data.db')
+    """初始化資料庫"""
+    # check_same_thread=False 允許不同執行緒 (UDP Server 與 Flask) 讀寫 DB
+    conn = sqlite3.connect('iot_data.db', check_same_thread=False)
     cur = conn.cursor()
-    # 確保包含 hrv 與 risk_level 欄位
+    
+    # 1. 原始遙測資料表 (新增 needs_ack 欄位供 UI 判斷是否要跳出視窗)
     cur.execute('''CREATE TABLE IF NOT EXISTS telemetry (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         device_id INTEGER,
         device_name TEXT,
-        temp REAL,
-        heart REAL,
-        hrv REAL,
-        spo2 REAL,
-        speed REAL,
-        heading REAL,
-        distance REAL,
-        battery REAL,
-        risk_level TEXT,
-        event_code TEXT,
+        temp REAL, heart REAL, hrv REAL, spo2 REAL,
+        speed REAL, heading REAL, distance REAL, battery REAL,
+        risk_level TEXT, event_code TEXT,
+        needs_ack BOOLEAN DEFAULT 0,
         server_received_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )''')
+    
+    # 2. 新增：事件紀錄總表 (紀錄異常區間與歷史陣列)
+    cur.execute('''CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        start_time DATETIME,
+        end_time DATETIME,
+        from_level TEXT,
+        to_level TEXT,
+        reason TEXT,
+        action_taken TEXT,
+        duration_sec REAL,
+        hr_trend TEXT,
+        hrv_trend TEXT
+    )''')
+    
+    # 3. 保險理賠表 (Insurance Claims)
+    cur.execute('''CREATE TABLE IF NOT EXISTS insurance_claims (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        insurance_type TEXT,
+        status TEXT, 
+        hospitalized_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        discharged_at DATETIME,
+        days INTEGER DEFAULT 0,
+        amount REAL DEFAULT 0.0
+    )''')
+
+    # 4. 醫療報告表 (Medical Reports)
+    cur.execute('''CREATE TABLE IF NOT EXISTS medical_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        claim_id INTEGER,
+        report_type TEXT, 
+        content TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+
+    # 5. 保單與回饋表 (Insurance Policies)
+    cur.execute('''CREATE TABLE IF NOT EXISTS insurance_policies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id INTEGER,
+        policy_type TEXT,
+        status TEXT,
+        quality_feedback TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
     conn.commit()
     return conn
 
+db_conn = init_db()
+
+def generate_report(uid, lvl, code, hr, hrv, spo2, dur):
+    """根據狀態生成事件通報文字"""
+    state = UE_STATES.get(uid, {})
+    prev_lvl = state.get("last_lvl", "Level 0")
+    
+    if lvl == "Level 1":
+        return f"事件報告：個人循環浮動\n1.原因：生理數據持續波動\n2.數據：HR:{hr:.1f}, HRV:{hrv:.1f}, 持續:{dur:.1f}s"
+    elif lvl == "Level 2":
+        return f"事件報告：個人循環異常\n1.前級：{prev_lvl}\n2.行動：已發送提醒\n3.數據：HR:{hr:.1f}, HRV:{hrv:.1f}"
+    elif lvl == "Level 3":
+        return f"事件報告：個人循環風險\n1.前級：{prev_lvl}\n2.結果：通報照護端\n3.數據：HR:{hr:.1f}, SpO2:{spo2:.1f}%"
+    elif lvl == "Level 4":
+        return f"事件報告：個人循環危害\n1.行動：緊急救援通報\n2.狀態：極端異常且血氧下降"
+    return ""
+
 def analyze_risk_logic(uid, hr, hrv, spo2, speed):
-    """
-    實作傳遞資訊(劇本一)的語義聯動邏輯
-    """
     now = time.time()
-    if uid not in UE_STATES:
-        UE_STATES[uid] = {
-            "l1_start": None, 
-            "l2_start": None, 
-            "static_start": now if speed < 0.5 else None
-        }
+    state = UE_STATES.setdefault(uid, {
+        "anomaly_start": None, "static_start": None,
+        "last_lvl": "Level 0", "last_ack_time": 0,
+        "needs_ack": False, "hr_history": [], "hrv_history": []
+    })
     
-    state = UE_STATES[uid]
-    
-    # 更新靜止狀態計時
-    if speed < 0.5:
+    is_static = (speed < 0.1)
+    if is_static:
         if state["static_start"] is None: state["static_start"] = now
+    else: state["static_start"] = None
+
+    static_elapsed = (now - state["static_start"]) if state["static_start"] else 0
+    is_abnormal = (hr > 100 or hrv < 35 or spo2 < 94)
+    
+    if is_abnormal:
+        if state["anomaly_start"] is None:
+            state["anomaly_start"] = now
+            state["hr_history"] = []
+            state["hrv_history"] = []
+            state["needs_ack"] = False
+        
+        anomaly_elapsed = now - state["anomaly_start"]
+        state["hr_history"].append(hr)
+        state["hrv_history"].append(hrv)
+        
+        # 核心邏輯修改：根據等級決定是否「立即發出警報」
+        lvl = "Level 0"
+        if (hr > 140 or hr < 40) or spo2 < 90:
+            lvl = "Level 4"
+            if not state["needs_ack"] and (now - state["last_ack_time"] > 60):
+                state["needs_ack"] = True  # L4 立即警報，加入 60 秒冷卻
+        elif anomaly_elapsed > 30.0 and static_elapsed > 15.0:
+            lvl = "Level 3"
+            if not state["needs_ack"] and (now - state["last_ack_time"] > 60):
+                state["needs_ack"] = True  # L3 立即警報，加入 60 秒冷卻
+        elif anomaly_elapsed > 60.0:
+            lvl = "Level 2"
+            # L2 仍維持 10 分鐘 ACK 延遲邏輯
+            if not state["needs_ack"] and (now - state["last_ack_time"] > 600):
+                state["needs_ack"] = True
+        elif anomaly_elapsed > 15.0:
+            lvl = "Level 1"
+            
+        return lvl, "E_LOGIC"
     else:
+        # ... 恢復邏輯保持不變 ...
+        state["anomaly_start"] = None
         state["static_start"] = None
-    
-    static_dur = (now - state["static_start"]) if state["static_start"] else 0
+        state["needs_ack"] = False
+        return "Level 0", "N001"
 
-    # Level 4 (緊急): 心率極端異常 + 血氧下降 (直接啟動)
-    if (hr > 140 or hr < 40) and spo2 < 90:
-        return "Level 4", "E_URGENT"
 
-    # Level 2 & 3 核心條件: 心率上升 + HRV 下降
-    is_abnormal_cond = (hr > 100 and hrv < 30)
-    
-    if is_abnormal_cond:
-        if state["l2_start"] is None: state["l2_start"] = now
-        l2_dur = now - state["l2_start"]
+
+# =====================================================================
+# 輕量級 API Server (用於接收 Web UI 的 ACK 動作)
+# =====================================================================
+app = Flask(__name__)
+CORS(app)
+
+# 關閉 Flask 預設的日誌洗畫面
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+@app.route('/api/ack_event', methods=['POST'])
+def ack_event():
+    uid = int(request.args.get('uid', 0))
+    if uid in UE_STATES:
+        now = time.time()
+        UE_STATES[uid]["needs_ack"] = False
+        UE_STATES[uid]["last_ack_time"] = now # 更新最後按按鈕時間
         
-        # Level 3 (高風險): Level 2 持續 + (血氧波動 或 長時間靜止 > 10分鐘)
-        if l2_dur > 60 and (spo2 < 94 or static_dur > 600):
-            return "Level 3", "E_HIGH_RISK"
+        # 新增：在事件表中紀錄「UE 已回覆」
+        try:
+            cur = db_conn.cursor()
+            cur.execute('''INSERT INTO events 
+                (device_id, start_time, end_time, from_level, to_level, reason, action_taken, duration_sec) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (uid, datetime.now(), datetime.now(), 
+                 UE_STATES[uid]["last_lvl"], "ACK", "UE已回覆", "使用者手動確認提醒", 0))
+            db_conn.commit()
+        except Exception as e:
+            print(f"DB Error: {e}")
+
+        print(f"\n>>> [UI 互動] 設備 ID:{uid} 已回覆。提醒功能將暫停 1 分鐘。\n")
+        return jsonify({"status": "success", "message": "ACK recorded"})
+    return jsonify({"status": "error", "message": "UE not found"}), 404
+
+# --- 保險相關 API ---
+@app.route('/api/insurance/hospitalize', methods=['POST'])
+def insurance_hospitalize():
+    data = request.json
+    uid = data.get('uid')
+    ins_type = data.get('type', '意外險')
+    try:
+        cur = db_conn.cursor()
+        # 建立理賠單與住院通知
+        cur.execute("INSERT INTO insurance_claims (device_id, insurance_type, status) VALUES (?, ?, 'HOSPITALIZED')", (uid, ins_type))
+        claim_id = cur.lastrowid
+        cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, ?, 'NOTICE', '管理中心確認發布意外事件與住院通知')", (uid, claim_id))
+        db_conn.commit()
+        return jsonify({"status": "success", "claim_id": claim_id})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/claims', methods=['GET'])
+def get_insurance_claims():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("SELECT id, device_id, insurance_type, status, hospitalized_at, discharged_at, days, amount FROM insurance_claims ORDER BY id DESC")
+        claims = [{"id": r[0], "uid": r[1], "type": r[2], "status": r[3], "h_at": r[4], "d_at": r[5], "days": r[6], "amount": r[7]} for r in cur.fetchall()]
         
-        # Level 2 (異常): 條件持續超過 1 分鐘
-        if l2_dur > 60:
-            return "Level 2", "E_ABNORMAL"
-    else:
-        state["l2_start"] = None
+        cur.execute("SELECT claim_id, report_type, content, created_at FROM medical_reports")
+        reports = cur.fetchall()
+        for c in claims:
+            c["reports"] = [{"type": r[1], "content": r[2], "time": r[3]} for r in reports if r[0] == c["id"]]
+            
+        return jsonify(claims)
+    except Exception as e:
+        return jsonify([])
 
-    # Level 1 (徵兆): 靜止下心率偏高 + HRV 下降 (持續超過 15 秒)
-    if hr > 90 and hrv < 40:
-        if state["l1_start"] is None: state["l1_start"] = now
-        if (now - state["l1_start"]) > 15:
-            return "Level 1", "E_SIGN"
-    else:
-        state["l1_start"] = None
+@app.route('/api/insurance/report', methods=['POST'])
+def add_medical_report():
+    data = request.json
+    uid = data.get('uid')
+    claim_id = data.get('claim_id')
+    rtype = data.get('report_type')
+    content = data.get('content')
+    try:
+        cur = db_conn.cursor()
+        cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, ?, ?, ?)", (uid, claim_id, rtype, content))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
 
-    return "Level 0", "N001"
+@app.route('/api/insurance/discharge', methods=['POST'])
+def insurance_discharge():
+    data = request.json
+    claim_id = data.get('claim_id')
+    days = data.get('days', 0)
+    amount = data.get('amount', 0.0)
+    try:
+        cur = db_conn.cursor()
+        cur.execute("UPDATE insurance_claims SET status='SETTLED', days=?, amount=?, discharged_at=CURRENT_TIMESTAMP WHERE id=?", (days, amount, claim_id))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
 
+@app.route('/api/insurance/apply', methods=['POST'])
+def apply_insurance():
+    data = request.json
+    uid = data.get('uid')
+    content = data.get('report_content', '長期健康分析報告')
+    try:
+        cur = db_conn.cursor()
+        # 把長期報告存成一個沒綁 claim_id 的醫療報告
+        cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, 0, 'LONG_TERM', ?)", (uid, content))
+        # 建立一筆 pending 保單申請
+        cur.execute("INSERT INTO insurance_policies (device_id, policy_type, status) VALUES (?, '長期健康險', 'PENDING')", (uid,))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/quality', methods=['POST'])
+def update_quality():
+    data = request.json
+    policy_id = data.get('policy_id')
+    feedback = data.get('feedback')
+    status = data.get('status', 'ACTIVE')
+    try:
+        cur = db_conn.cursor()
+        cur.execute("UPDATE insurance_policies SET quality_feedback=?, status=? WHERE id=?", (feedback, status, policy_id))
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/policies', methods=['GET'])
+def get_policies():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("""
+            SELECT p.id, p.device_id, p.policy_type, p.status, p.quality_feedback, p.created_at, m.content
+            FROM insurance_policies p
+            LEFT JOIN medical_reports m ON m.device_id = p.device_id AND m.report_type = 'LONG_TERM' AND m.claim_id = 0
+            ORDER BY p.id DESC
+        """)
+        res = [{"id": r[0], "uid": r[1], "type": r[2], "status": r[3], "feedback": r[4], "created_at": r[5], "report": r[6]} for r in cur.fetchall()]
+        return jsonify(res)
+    except:
+        return jsonify([])
+
+def start_api_server():
+    # 運行在 5002 port，避免與前端 Web 的 5000 / 5001 衝突
+    app.run(host='0.0.0.0', port=5002, use_reloader=False)
+
+
+# =====================================================================
+# UDP 邊緣伺服器主程式
+# =====================================================================
 def start_edge_server(host='0.0.0.0', port=12345):
-    db_conn = init_db()
+    # 啟動 API 執行緒
+    api_thread = threading.Thread(target=start_api_server, daemon=True)
+    api_thread.start()
+
     cur = db_conn.cursor()
+    RECV_FORMAT = '!idffffffff10s' 
+    CMD_FORMAT = '!10sf256s'
     
-    # 封包格式: !idffffffff (10個元素: ID, Time, T, HR, HRV, SpO2, Spd, Head, Dist, Bat)
-    PACKET_FORMAT = '!idffffffff' 
-    
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge Server (劇本一：風險判定版) 啟動中...")
-    print(f"模式: Linux DEMO | 監聽: {host}:{port}")
-    print("-" * 90)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge Server (時間序列追蹤版) 已啟動")
+    print(" - UDP 監聽 Port : 12345 (接收終端數據)")
+    print(" - API 監聽 Port : 5002  (接收前端 ACK)")
+    print("-" * 110)
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.bind((host, port))
@@ -111,57 +337,74 @@ def start_edge_server(host='0.0.0.0', port=12345):
         while True:
             try:
                 raw_packet, addr = s.recvfrom(1024)
+                now_ts = time.time()
                 
-                # 遍歷註冊表嘗試解密
                 for d_id, cfg in DEVICE_REGISTRY.items():
                     try:
+                        # 解密
                         if cfg["decrypt"] == "XOR":
                             decrypted = bytes([b ^ 0xAA for b in raw_packet])
                         else:
-                            decoded = base64.b64decode(raw_packet)
-                            decrypted = bytes([(b - 3) % 256 for b in decoded])
+                            decrypted = bytes([(b - 3) % 256 for b in base64.b64decode(raw_packet)])
                         
-                        # 解析封包
-                        unpacked = struct.unpack(PACKET_FORMAT, decrypted)
-                        uid, ts, temp, hr, hrv, o2, spd, head, dist, bat = unpacked
+                        # 解析數據
+                        uid, ts, temp, hr, hrv, o2, spd, head, dist, bat, ue_ack_bytes = struct.unpack(RECV_FORMAT, decrypted)
+                        ue_ack_lvl = ue_ack_bytes.decode('utf-8').strip('\x00')
                         
                         if uid == d_id:
-                            # 執行劇本邏輯判定
+                            # 1. 邏輯判定
                             lvl, code = analyze_risk_logic(uid, hr, hrv, o2, spd)
+                            needs_ack = UE_STATES[uid].get("needs_ack", False)
                             
-                            # 寫入資料庫 (含錯誤攔截)
-                            try:
-                                cur.execute('''
-                                    INSERT INTO telemetry (
-                                        device_id, device_name, temp, heart, hrv, spo2, 
-                                        speed, heading, distance, battery, risk_level, event_code
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', (
-                                    uid, cfg["name"], round(temp, 2), round(hr, 2), round(hrv, 2), 
-                                    round(o2, 2), round(spd, 2), round(head, 2), round(dist, 2), 
-                                    round(bat, 2), lvl, code
-                                ))
-                                db_conn.commit()
-                            except sqlite3.OperationalError as db_err:
-                                print(f"\n[DB ERROR] 寫入失敗: {db_err}")
-                                print(">> 請執行 'rm iot_data.db' 刪除舊資料庫後重啟伺服器。")
-                                continue
+                            # 2. 狀態變更通知
+                            prev_lvl = UE_STATES[uid].get("last_lvl", "Level 0")
+                            if lvl != prev_lvl:
+                                reason_map = {
+                                    "E_SIGN_PERSIST": "偵測到異常持續 > 15秒",
+                                    "E_ABNORMAL_LONG": "異常狀態惡化持續 > 60秒",
+                                    "E_URGENT": "緊急：觸發極端數值",
+                                    "N001": "生理數據恢復正常"
+                                }
+                                print(f"\n>>> [通知] ID:{uid} 狀態變更: {prev_lvl} -> {lvl} ({reason_map.get(code, '')})\n")
+                                UE_STATES[uid]["last_lvl"] = lvl
 
-                            # 輸出彩色日誌
-                            color = "\033[91m" if lvl != "Level 0" else "\033[92m"
-                            reset = "\033[0m"
-                            ts_str = datetime.now().strftime('%H:%M:%S')
-                            print(f"[{ts_str}] ID:{uid:<3} | {color}{lvl:<8}{reset} | HR:{hr:>5.1f} | HRV:{hrv:>5.1f} | SpO2:{o2:>5.1f}% | Code:{code}")
+                            # 3. 資料庫寫入 (Telemetry)
+                            cur.execute('''INSERT INTO telemetry 
+                                (device_id, device_name, temp, heart, hrv, spo2, speed, heading, distance, battery, risk_level, event_code, needs_ack) 
+                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                       (uid, cfg["name"], temp, hr, hrv, o2, spd, head, dist, bat, lvl, code, needs_ack))
+                            db_conn.commit()
+                            
+                            # 4. 指令與 ACK 同步機制 (回傳給 UE)
+                            interval = LEVEL_INTERVALS.get(lvl, 4.0)
+                            dur = (now_ts - UE_STATES[uid]["anomaly_start"]) if UE_STATES[uid]["anomaly_start"] else 0
+                            report_msg = generate_report(uid, lvl, code, hr, hrv, o2, dur)
+                            
+                            cmd_packet = struct.pack(CMD_FORMAT, lvl.encode('utf-8'), interval, report_msg.encode('utf-8'))
+                            s.sendto(cmd_packet, addr)
+
+                            # 5. 螢幕 Log
+                            if now_ts - LAST_PRINT_TIME.get(uid, 0) >= 1:
+                                color_map = {
+                                    "Level 0": "\033[92m", # 綠色
+                                    "Level 1": "\033[36m", # 淺藍色
+                                    "Level 2": "\033[93m", # 黃色
+                                    "Level 3": "\033[31m", # 深紅色
+                                    "Level 4": "\033[91m", # 亮紅色
+                                }
+                                color = color_map.get(lvl, "\033[0m")
+                                reset = "\033[0m"
+                                ack_str = "\033[91m[!!!立即警告!!!]\033[0m" if (needs_ack and lvl in ["Level 3", "Level 4"]) else ("\033[93m[待確認]\033[0m" if needs_ack else "")
+                                print(f"[{datetime.now().strftime('%H:%M:%S')}] ID:{uid} | {color}{lvl:<8}{reset} | Spd:{spd:>4.2f} | HR:{hr:>5.1f} | {ack_str}")
+                                LAST_PRINT_TIME[uid] = now_ts
                             break
-                    except Exception:
-                        # 解析失敗則嘗試下一個註冊設備
+                    except Exception as inner_e: 
                         continue
                         
-            except KeyboardInterrupt:
-                print("\n[INFO] 伺服器關閉。")
+            except KeyboardInterrupt: 
                 break
-            except Exception as e:
-                print(f"\n[FATAL ERROR] 系統異常: {e}")
+            except Exception as e: 
+                print(f"Error: {e}")
 
     db_conn.close()
 
