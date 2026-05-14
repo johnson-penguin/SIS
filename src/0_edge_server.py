@@ -329,7 +329,7 @@ def start_edge_server(host='0.0.0.0', port=12345):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge Server (時間序列追蹤版) 已啟動")
     print(" - UDP 監聽 Port : 12345 (接收終端數據)")
     print(" - API 監聽 Port : 5002  (接收前端 ACK)")
-    print("-" * 110)
+    print("-" * 60)
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.bind((host, port))

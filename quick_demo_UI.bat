@@ -14,10 +14,10 @@ echo Starting UIs in Background...
 echo Working Directory: %cd%
 
 :: 4. 啟動 Python 服務
-start "" /b python "2_web_monitoring_station.py"
-start "" /b python "2_web_ue.py"
-start "" /b python "3_party_ui.py"
-start "" /b python "4_insurance_ui.py"
+start "" /b python "src\2_web_monitoring_station.py"
+start "" /b python "src\2_web_ue.py"
+start "" /b python "src\3_party_ui.py"
+start "" /b python "src\4_insurance_ui.py"
 
 echo ==========================================================
 echo 2_web_monitoring_station.py -^> http://localhost:5000

@@ -17,4 +17,10 @@ if %errorlevel% equ 0 (
     echo [Error] Script failed with exit code %errorlevel%.
 )
 
-pause
+:: 關閉指定的視窗 (使用萬用字元 * 以防標題帶有其他路徑資訊)
+echo.
+echo Closing specific process windows...
+taskkill /F /FI "WINDOWTITLE eq Single UE Process*" >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq Edge Server Process*" >nul 2>&1
+
+:: (已移除 pause，視窗將會自動關閉)
