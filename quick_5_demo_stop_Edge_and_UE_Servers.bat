@@ -1,4 +1,13 @@
 @echo off
+:: 載入 .env 檔案
+if exist "%~dp0.env" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%~dp0.env") do set "%%a=%%b"
+) else (
+    echo [錯誤] 找不到 .env 檔案！
+    pause
+    exit /b
+)
+
 :: 切換到 UTF-8 編碼以支援中文路徑（選用）
 chcp 65001 >nul
 
@@ -7,7 +16,7 @@ echo Starting PowerShell script...
 :: 執行 PowerShell 腳本
 :: -ExecutionPolicy Bypass: 繞過腳本執行限制
 :: -File: 指定腳本路徑
-powershell.exe -ExecutionPolicy Bypass -File "C:\Users\bmwlab\Desktop\SIS\script\winsows\clean_.ps1"
+powershell.exe -ExecutionPolicy Bypass -File "%PROJECT_ROOT%\%CLEAN_SCRIPT_PATH%"
 
 if %errorlevel% equ 0 (
     echo.

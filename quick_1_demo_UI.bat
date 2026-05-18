@@ -2,12 +2,18 @@
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 
-:: ==========================================================
-:: 2. 設定硬編碼路徑 (請修改下方路徑)
-:: ==========================================================
-set "PROJECT_ROOT=C:\Users\bmwlab\Desktop\SIS"
+:: 載入 .env 檔案
+if exist "%~dp0.env" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%~dp0.env") do set "%%a=%%b"
+) else (
+    echo [錯誤] 找不到 .env 檔案！
+    pause
+    exit /b
+)
 
-:: 3. 切換到該目錄
+:: ==========================================================
+:: 3. 切換到專案根目錄
+:: ==========================================================
 cd /d "%PROJECT_ROOT%"
 
 echo Starting UIs in Background...
@@ -16,8 +22,8 @@ echo Working Directory: %cd%
 :: 4. 啟動 Python 服務
 start "" /b python "src\2_web_monitoring_station.py"
 start "" /b python "src\2_web_ue.py"
-start "" /b python "src\3_party_ui.py"
-start "" /b python "src\4_insurance_ui.py"
+start "" /b python "src\2_party_ui.py"
+start "" /b python "src\2_insurance_ui.py"
 
 echo ==========================================================
 echo 2_web_monitoring_station.py -^> http://localhost:5000
@@ -36,8 +42,8 @@ echo [1/2] 正在搜尋並終止指定的 Python 腳本程序...
 echo ----------------------------------------------------------
 call :kill_script "2_web_monitoring_station.py"
 call :kill_script "2_web_ue.py"
-call :kill_script "3_party_ui.py"
-call :kill_script "4_insurance_ui.py"
+call :kill_script "2_party_ui.py"
+call :kill_script "2_insurance_ui.py"
 
 :: 等待 2 秒讓作業系統確實釋放資源
 timeout /t 2 /nobreak >nul
@@ -49,9 +55,9 @@ call :verify_script "2_web_monitoring_station.py"
 timeout /t 1 /nobreak >nul
 call :verify_script "2_web_ue.py"
 timeout /t 1 /nobreak >nul
-call :verify_script "3_party_ui.py"
+call :verify_script "2_party_ui.py"
 timeout /t 1 /nobreak >nul
-call :verify_script "4_insurance_ui.py"
+call :verify_script "2_insurance_ui.py"
 timeout /t 1 /nobreak >nul
 
 echo.
