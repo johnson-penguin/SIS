@@ -5,9 +5,21 @@ import base64
 import time
 import json
 import threading
+import keyboard  # 新增：用於監聽鍵盤按鍵
+import os        # 新增：用於完全退出程式
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+
+# --- 伺服器運行狀態 ---
+SERVER_RUNNING = True
+
+def trigger_shutdown():
+    """按下 K 鍵時觸發的關閉函式"""
+    global SERVER_RUNNING
+    print("\n>>> [系統] 接收到 'K' 鍵指令，正在準備安全關閉伺服器...")
+    SERVER_RUNNING = False
+
 # --- 設備註冊與配置 ---
 DEVICE_REGISTRY = {
     101: {"name": "A_Sensor_1", "decrypt": "XOR"},
@@ -159,7 +171,7 @@ def analyze_risk_logic(uid, hr, hrv, spo2, speed):
             
         return lvl, "E_LOGIC"
     else:
-        # ... 恢復邏輯保持不變 ...
+        # 恢復邏輯
         state["anomaly_start"] = None
         state["static_start"] = None
         state["needs_ack"] = False
@@ -210,7 +222,6 @@ def insurance_hospitalize():
     ins_type = data.get('type', '意外險')
     try:
         cur = db_conn.cursor()
-        # 建立理賠單與住院通知
         cur.execute("INSERT INTO insurance_claims (device_id, insurance_type, status) VALUES (?, ?, 'HOSPITALIZED')", (uid, ins_type))
         claim_id = cur.lastrowid
         cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, ?, 'NOTICE', '管理中心確認發布意外事件與住院通知')", (uid, claim_id))
@@ -271,9 +282,7 @@ def apply_insurance():
     content = data.get('report_content', '長期健康分析報告')
     try:
         cur = db_conn.cursor()
-        # 把長期報告存成一個沒綁 claim_id 的醫療報告
         cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, 0, 'LONG_TERM', ?)", (uid, content))
-        # 建立一筆 pending 保單申請
         cur.execute("INSERT INTO insurance_policies (device_id, policy_type, status) VALUES (?, '長期健康險', 'PENDING')", (uid,))
         db_conn.commit()
         return jsonify({"status": "success"})
@@ -322,6 +331,10 @@ def start_edge_server(host='0.0.0.0', port=12345):
     api_thread = threading.Thread(target=start_api_server, daemon=True)
     api_thread.start()
 
+    # --- 註冊按鍵監聽 ---
+    keyboard.add_hotkey('k', trigger_shutdown)
+    keyboard.add_hotkey('K', trigger_shutdown)
+
     cur = db_conn.cursor()
     RECV_FORMAT = '!idffffffff10s' 
     CMD_FORMAT = '!10sf256s'
@@ -329,12 +342,16 @@ def start_edge_server(host='0.0.0.0', port=12345):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Edge Server (時間序列追蹤版) 已啟動")
     print(" - UDP 監聽 Port : 12345 (接收終端數據)")
     print(" - API 監聽 Port : 5002  (接收前端 ACK)")
+    print(" - 操作提示: 隨時按下 'K' 鍵即可安全關閉伺服器")
     print("-" * 60)
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.bind((host, port))
         
-        while True:
+        # --- 設定 Socket 逾時，避免死鎖 ---
+        s.settimeout(1.0)
+        
+        while SERVER_RUNNING:
             try:
                 raw_packet, addr = s.recvfrom(1024)
                 now_ts = time.time()
@@ -401,12 +418,19 @@ def start_edge_server(host='0.0.0.0', port=12345):
                     except Exception as inner_e: 
                         continue
                         
+            except socket.timeout:
+                # 這是正常的 timeout，為了讓迴圈能去檢查 SERVER_RUNNING 是否被設為 False
+                continue
             except KeyboardInterrupt: 
                 break
             except Exception as e: 
                 print(f"Error: {e}")
 
+    # --- 關閉流程 ---
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 正在關閉資料庫連線...")
     db_conn.close()
+    print("伺服器已安全關閉。")
+    os._exit(0) # 強制結束包含 Flask 在內的所有背景進程
 
 if __name__ == "__main__":
     start_edge_server()

@@ -3,8 +3,18 @@ import time
 import struct
 import random
 import sys
+import os
 import msvcrt  # Windows 專用的控制台 I/O 模組
 from datetime import datetime
+
+# --- 模擬器運行狀態 ---
+SIMULATION_RUNNING = True
+
+def trigger_shutdown():
+    """按下 K 鍵時觸發的關閉函式"""
+    global SIMULATION_RUNNING
+    print("\n>>> [系統] 接收到 'K' 鍵指令，正在準備安全關閉模擬器...")
+    SIMULATION_RUNNING = False
 
 # --- Windows 非阻塞按鍵偵測 ---
 def get_key_windows():
@@ -41,22 +51,30 @@ def start_single_ue_simulation(server_ip='127.0.0.1', server_port=12345):
     print(" [1] 異常波動 (觸發 L1 / L2)")
     print(" [2] 活動力喪失 (速率衰減 -> 0，觸發 L3)")
     print(" [3] 極端惡化 (休克邊緣，觸發 L4)")
+    print(" [K] 關閉程式")
     print(" [Ctrl+C] 退出")
     print("=" * 80)
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            while True:
+            while SIMULATION_RUNNING:
                 # 1. 偵測按鍵 (Windows 專用方式)
                 key = get_key_windows()
-                if key and key in ['0', '1', '2', '3']:
-                    target_lvl_key = key
-                    mode_map = {'0': "正常", '1': "異常波動", '2': "活動力喪失", '3': "極端惡化"}
-                    print(f"\n[指令] 切換情境為: {mode_map[key]} (按鍵 {key})")
-                    
-                    # 若切換回正常，重置速率
-                    if key == '0':
-                        current_speed = 1.5
+                
+                if key:
+                    # 新增：按 K 關閉邏輯 (支援大小寫)
+                    if key.lower() == 'k':
+                        trigger_shutdown()
+                        continue
+                        
+                    elif key in ['0', '1', '2', '3']:
+                        target_lvl_key = key
+                        mode_map = {'0': "正常", '1': "異常波動", '2': "活動力喪失", '3': "極端惡化"}
+                        print(f"\n[指令] 切換情境為: {mode_map[key]} (按鍵 {key})")
+                        
+                        # 若切換回正常，重置速率
+                        if key == '0':
+                            current_speed = 1.5
 
                 # 2. 產生生理與動態數據
                 if target_lvl_key == '0':
@@ -101,7 +119,11 @@ def start_single_ue_simulation(server_ip='127.0.0.1', server_port=12345):
                 time.sleep(max(0, current_interval - 0.22))
 
     except KeyboardInterrupt:
-        print("\n\n[INFO] 模擬器已關閉。")
+        print("\n>>> [系統] 偵測到 Ctrl+C，正在準備安全關閉模擬器...")
+
+    # --- 關閉流程 ---
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 模擬器已安全關閉。")
+    os._exit(0)
 
 if __name__ == "__main__":
-    start_single_ue_simulation()
+    start_single_ue_simulation()
