@@ -107,7 +107,10 @@ HTML_TEMPLATE = """
     <div class="main-chart-container"><canvas id="main-canvas"></canvas></div>
 
     <div class="event-section">
-        <h2 style="margin-bottom: 15px;">📜 全域設備狀態變更歷史 (動態回溯)</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h2 style="margin: 0;">📜 全域設備狀態變更歷史 (動態回溯)</h2>
+            <button class="btn" style="background: #ef4444;" onclick="clearEvents()">🗑️ 清空歷史紀錄</button>
+        </div>
         <div class="event-list" id="global-event-list"></div>
     </div>
 
@@ -273,7 +276,7 @@ HTML_TEMPLATE = """
                         <div class="event-card ${bClass}">
                             <div class="event-info">
                                 <div class="ue-tag">設備 ID: ${uid}</div>
-                                <div class="event-title" style="color: ${tColor}">${tIcon} ${tTitle} (Level ${fromLvl} → Level ${toLvl})</div>
+                                <div class="event-title" style="color: ${tColor}">${tIcon} ${tTitle} (${fromLvl} → ${toLvl})</div>
                                 <div class="event-meta" style="margin-bottom: 10px;">
                                     <b>發生時間：</b> ${eventTime}<br>
                                     <b>判讀依據：</b> ${desc}<br>
@@ -344,6 +347,18 @@ HTML_TEMPLATE = """
                     }
                 });
             } catch(e) {}
+        }
+
+        async function clearEvents() {
+            if (!confirm("確定要清空事件歷史紀錄嗎？（這會刪除資料庫中的事件，但保留原始數據）")) return;
+            try {
+                await fetch(`http://${window.location.hostname}:5002/api/clear_events`, { method: 'POST' });
+                document.getElementById('global-event-list').innerHTML = '';
+                // 不清除 seenSettledClaims，避免舊的理賠紀錄在下次 fetch 時重複出現
+                alert("已清空事件歷史紀錄");
+            } catch(e) {
+                alert("清空失敗：" + e);
+            }
         }
 
         async function notifyInsurance(uid, noticeType, insType, btnElement) {

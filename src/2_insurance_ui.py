@@ -26,25 +26,36 @@ HTML_TEMPLATE = """
         .tag-notice { background: rgba(56,189,248,0.2); color: #38bdf8; }
         .tag-diag { background: rgba(16,185,129,0.2); color: #10b981; }
         .tag-follow { background: rgba(245,158,11,0.2); color: #f59e0b; }
+        .numpad-btn { background: #334155; color: white; border: none; padding: 15px; font-size: 1.5em; border-radius: 8px; cursor: pointer; transition: 0.2s; }
+        .numpad-btn:hover { background: #475569; }
+        .numpad-btn:active { background: #0f172a; }
     </style>
 </head>
 <body>
     <div class="header">
         <h1 style="margin:0;">🏦 SIS 保險業務與理賠核心系統</h1>
-        <div style="font-size: 0.9em; color: #94a3b8;">Edge API 連線狀態: <span style="color:#10b981;">● 正常</span></div>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <div style="font-size: 0.9em; color: #94a3b8;">Edge API 連線狀態: <span style="color:#10b981;">● 正常</span></div>
+        </div>
     </div>
 
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
         <!-- 理賠處置區 -->
         <div class="panel">
-            <h2 style="margin-top:0; color: #38bdf8;">🏥 住院理賠與事故處置</h2>
-            <div id="claims-list">載入中...</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin:0; color: #38bdf8;">🏥 住院理賠與事故處置</h2>
+                <button class="btn btn-red" style="padding: 5px 10px; font-size: 0.9em;" onclick="clearClaims()">🗑️ 清空紀錄</button>
+            </div>
+            <div id="claims-list"><div style="color:#94a3b8;">目前無紀錄。</div></div>
         </div>
 
         <!-- 保單核發與品質回饋區 -->
         <div class="panel">
-            <h2 style="margin-top:0; color: #f59e0b;">🛡️ 申購核險與保單管理</h2>
-            <div id="policies-list">載入中...</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin:0; color: #f59e0b;">🛡️ 申購核險與保單管理</h2>
+                <button class="btn btn-red" style="padding: 5px 10px; font-size: 0.9em;" onclick="clearPolicies()">🗑️ 清空紀錄</button>
+            </div>
+            <div id="policies-list"><div style="color:#94a3b8;">目前無紀錄。</div></div>
         </div>
     </div>
 
@@ -54,6 +65,44 @@ HTML_TEMPLATE = """
             <h2 style="text-align: center; border-bottom: 2px dashed #ccc; padding-bottom: 10px;">📋 電子理賠核算單</h2>
             <div id="receipt-content" style="line-height: 1.8; margin-top: 20px;"></div>
             <button class="btn btn-blue" style="width: 100%; margin-top: 20px;" onclick="document.getElementById('receipt-overlay').style.display='none'">確認並關閉</button>
+        </div>
+    </div>
+
+    <!-- 申購與建議彈窗 -->
+    <div id="feedback-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); align-items:center; justify-content:center; z-index:100;">
+        <div style="background: #1e293b; color: white; padding: 30px; border-radius: 12px; width: 450px; box-shadow: 0 0 20px rgba(0,0,0,0.5); border: 1px solid #334155;">
+            <h2 style="text-align: center; margin-top: 0; color: #3b82f6;">💡 申購金額與建議設定</h2>
+            
+            <div style="margin-bottom: 15px;">
+                <label style="color: #94a3b8; font-size: 0.9em;">申購金額 ($)</label>
+                <input type="text" id="fb-amount" readonly style="width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #475569; color: #10b981; padding: 12px; font-size: 1.5em; border-radius: 6px; margin-top: 5px; text-align: right; font-weight: bold;" value="50,000">
+                
+                <!-- 數字小鍵盤 -->
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 15px;">
+                    <button class="numpad-btn" onclick="addNum('1')">1</button>
+                    <button class="numpad-btn" onclick="addNum('2')">2</button>
+                    <button class="numpad-btn" onclick="addNum('3')">3</button>
+                    <button class="numpad-btn" onclick="addNum('4')">4</button>
+                    <button class="numpad-btn" onclick="addNum('5')">5</button>
+                    <button class="numpad-btn" onclick="addNum('6')">6</button>
+                    <button class="numpad-btn" onclick="addNum('7')">7</button>
+                    <button class="numpad-btn" onclick="addNum('8')">8</button>
+                    <button class="numpad-btn" onclick="addNum('9')">9</button>
+                    <button class="numpad-btn" onclick="addNum('000')">000</button>
+                    <button class="numpad-btn" onclick="addNum('0')">0</button>
+                    <button class="numpad-btn" style="background: #ef4444;" onclick="delNum()">⌫</button>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+                <label style="color: #94a3b8; font-size: 0.9em;">給客戶的建議與費率調整</label>
+                <textarea id="fb-text" rows="3" style="width: 100%; box-sizing: border-box; background: #0f172a; border: 1px solid #475569; color: white; padding: 10px; font-size: 1em; border-radius: 6px; margin-top: 5px; resize: none;">根據您的長期數據，您的生理狀況優良！次年保費將給予 5% 費率折扣。</textarea>
+            </div>
+            
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button class="btn" style="background: #475569;" onclick="document.getElementById('feedback-overlay').style.display='none'">取消</button>
+                <button class="btn btn-blue" onclick="submitFeedback()">確認送出</button>
+            </div>
         </div>
     </div>
 
@@ -77,7 +126,7 @@ HTML_TEMPLATE = """
 
         function renderClaims(claims) {
             const list = document.getElementById('claims-list');
-            if(claims.length === 0) return list.innerHTML = "<div style='color:#94a3b8;'>目前無待處理理賠案件。</div>";
+            if(claims.length === 0) return list.innerHTML = "<div style='color:#94a3b8;'>目前無紀錄。</div>";
             
             let html = '';
             claims.forEach(c => {
@@ -151,7 +200,7 @@ HTML_TEMPLATE = """
 
         function renderPolicies(policies) {
             const list = document.getElementById('policies-list');
-            if(policies.length === 0) return list.innerHTML = "<div style='color:#94a3b8;'>目前無保單申請。</div>";
+            if(policies.length === 0) return list.innerHTML = "<div style='color:#94a3b8;'>目前無紀錄。</div>";
             
             let html = '';
             policies.forEach(p => {
@@ -161,7 +210,7 @@ HTML_TEMPLATE = """
                 if (p.status === 'PENDING') {
                     actionHtml = `<button class="btn btn-green" style="margin-top: 10px;" onclick="approvePolicy(${p.id})">✅ 核准保單</button>`;
                 } else {
-                    actionHtml = `<button class="btn btn-blue" style="margin-top: 10px;" onclick="sendFeedback(${p.id})">💡 發送次年費率調整與建議</button>`;
+                    actionHtml = `<button class="btn btn-blue" style="margin-top: 10px;" onclick="sendFeedback(${p.id})">💡 申購金額 + 建議</button>`;
                 }
 
                 let reportHtml = '';
@@ -251,17 +300,68 @@ HTML_TEMPLATE = """
             } catch(e) { alert("核准失敗"); }
         }
 
-        async function sendFeedback(policyId) {
-            let feedback = prompt("請輸入給客戶的定期品質報告與費率建議：", "根據您的長期數據，您的生理狀況優良！次年保費將給予 5% 費率折扣。");
-            if (!feedback) return;
+        let activePolicyId = null;
+
+        function addNum(num) {
+            let input = document.getElementById('fb-amount');
+            let val = input.value.replace(/,/g, '');
+            if (val === '0' && num !== '0' && num !== '000') val = '';
+            val += num;
+            input.value = Number(val).toLocaleString();
+        }
+
+        function delNum() {
+            let input = document.getElementById('fb-amount');
+            let val = input.value.replace(/,/g, '');
+            val = val.slice(0, -1);
+            if (!val) val = '0';
+            input.value = Number(val).toLocaleString();
+        }
+
+        function sendFeedback(policyId) {
+            activePolicyId = policyId;
+            document.getElementById('fb-amount').value = '50,000';
+            document.getElementById('feedback-overlay').style.display = 'flex';
+        }
+
+        async function submitFeedback() {
+            if (!activePolicyId) return;
+            let amount = document.getElementById('fb-amount').value;
+            let text = document.getElementById('fb-text').value;
+            let feedback = `申購金額: ${amount} | ${text}`;
+            
+            document.getElementById('feedback-overlay').style.display = 'none';
             try {
                 await fetch(`${API_BASE}/quality`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({policy_id: policyId, status: 'ACTIVE', feedback: feedback})
+                    body: JSON.stringify({policy_id: activePolicyId, status: 'ACTIVE', feedback: feedback})
                 });
-                alert("已發送回饋！");
+                alert("已發送！");
                 fetchAll();
             } catch(e) { alert("發送失敗"); }
+        }
+
+        async function clearClaims() {
+            if (!confirm("確定要刪除所有「住院理賠與事故處置」的紀錄嗎？")) return;
+            try {
+                await fetch(`http://${window.location.hostname}:5002/api/insurance/clear_claims`, { method: 'POST' });
+                hospitalTimers = {};
+                fetchAll();
+                alert("已清空理賠紀錄");
+            } catch(e) {
+                alert("清空失敗：" + e);
+            }
+        }
+
+        async function clearPolicies() {
+            if (!confirm("確定要刪除所有「申購核險與保單管理」的紀錄嗎？")) return;
+            try {
+                await fetch(`http://${window.location.hostname}:5002/api/insurance/clear_policies`, { method: 'POST' });
+                fetchAll();
+                alert("已清空保單紀錄");
+            } catch(e) {
+                alert("清空失敗：" + e);
+            }
         }
 
         setInterval(fetchAll, 3000);

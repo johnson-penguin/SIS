@@ -129,7 +129,7 @@ def analyze_risk_logic(uid, hr, hrv, spo2, speed):
     state = UE_STATES.setdefault(uid, {
         "anomaly_start": None, "static_start": None,
         "last_lvl": "Level 0", "last_ack_time": 0,
-        "needs_ack": False, "hr_history": [], "hrv_history": []
+        "needs_ack": False, "hr_history": [], "hrv_history": [], "force_safe": False
     })
     
     is_static = (speed < 0.1)
@@ -222,11 +222,69 @@ def insurance_hospitalize():
     ins_type = data.get('type', '意外險')
     try:
         cur = db_conn.cursor()
+        cur.execute("SELECT id FROM insurance_claims WHERE device_id=? AND status='HOSPITALIZED'", (uid,))
+        if cur.fetchone():
+            return jsonify({"status": "error", "msg": "該設備已在住院中，請勿重複發布"})
+            
         cur.execute("INSERT INTO insurance_claims (device_id, insurance_type, status) VALUES (?, ?, 'HOSPITALIZED')", (uid, ins_type))
         claim_id = cur.lastrowid
         cur.execute("INSERT INTO medical_reports (device_id, claim_id, report_type, content) VALUES (?, ?, 'NOTICE', '管理中心確認發布意外事件與住院通知')", (uid, claim_id))
         db_conn.commit()
+        
+        if uid in UE_STATES:
+            UE_STATES[uid]["force_safe"] = True
+            
         return jsonify({"status": "success", "claim_id": claim_id})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/clear_events', methods=['POST'])
+def clear_events():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("DELETE FROM events")
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/clear_history', methods=['POST'])
+def clear_insurance_history():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("DELETE FROM insurance_claims")
+        cur.execute("DELETE FROM medical_reports")
+        cur.execute("DELETE FROM insurance_policies")
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/clear_policies', methods=['POST'])
+def clear_policies():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("DELETE FROM insurance_policies")
+        cur.execute("DELETE FROM medical_reports WHERE report_type='LONG_TERM'")
+        db_conn.commit()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+@app.route('/api/insurance/clear_claims', methods=['POST'])
+def clear_claims():
+    try:
+        cur = db_conn.cursor()
+        cur.execute("DELETE FROM insurance_claims")
+        cur.execute("DELETE FROM medical_reports WHERE report_type != 'LONG_TERM'")
+        db_conn.commit()
+        
+        # 同步重置所有設備的 hospitalized 狀態 (若您有依賴此狀態)
+        for uid in UE_STATES:
+            if "hospitalized" in UE_STATES[uid]:
+                UE_STATES[uid]["hospitalized"] = False
+                
+        return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)})
 
@@ -396,6 +454,11 @@ def start_edge_server(host='0.0.0.0', port=12345):
                             interval = LEVEL_INTERVALS.get(lvl, 4.0)
                             dur = (now_ts - UE_STATES[uid]["anomaly_start"]) if UE_STATES[uid]["anomaly_start"] else 0
                             report_msg = generate_report(uid, lvl, code, hr, hrv, o2, dur)
+                            
+                            if UE_STATES[uid].get("force_safe"):
+                                report_msg += "[FORCE_SAFE]"
+                                if lvl == "Level 0":
+                                    UE_STATES[uid]["force_safe"] = False
                             
                             cmd_packet = struct.pack(CMD_FORMAT, lvl.encode('utf-8'), interval, report_msg.encode('utf-8'))
                             s.sendto(cmd_packet, addr)

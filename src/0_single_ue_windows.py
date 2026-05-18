@@ -32,9 +32,10 @@ def get_feedback(sock, timeout=0.2):
         data, _ = sock.recvfrom(1024)
         lvl_bytes, interval, report_bytes = struct.unpack('!10sf256s', data)
         lvl_str = lvl_bytes.decode('utf-8').strip('\x00')
-        return lvl_str, interval
+        report_str = report_bytes.decode('utf-8').strip('\x00')
+        return lvl_str, interval, report_str
     except Exception:
-        return None, None
+        return None, None, None
 
 def start_single_ue_simulation(server_ip='127.0.0.1', server_port=12345):
     PACKET_FORMAT = '!idffffffff10s'
@@ -103,7 +104,13 @@ def start_single_ue_simulation(server_ip='127.0.0.1', server_port=12345):
                 s.sendto(raw_data, (server_ip, server_port))
                 
                 # 接收反饋
-                new_lvl, new_interval = get_feedback(s, timeout=0.2)
+                new_lvl, new_interval, report_msg = get_feedback(s, timeout=0.2)
+                
+                if report_msg and "[FORCE_SAFE]" in report_msg:
+                    target_lvl_key = '0'
+                    current_speed = 1.5
+                    print("\n[系統] 收到住院通知，自動切換為模式 0 (安全狀態)")
+                    
                 if new_lvl and (new_lvl != current_lvl):
                     current_lvl = new_lvl
                     current_interval = new_interval

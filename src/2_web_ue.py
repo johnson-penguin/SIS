@@ -83,7 +83,10 @@ HTML_TEMPLATE = """
         <div style="background: #1e293b; border-radius: 12px; padding: 20px; border: 1px solid #334155;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <span style="font-size: 1.1em;">長期健康分析與保單服務</span>
-                <button class="ack-btn" style="margin-top: 0; padding: 10px 20px; background: #10b981; font-size: 1em;" onclick="applyInsurance(this)">📊 匯出長期報告並申購</button>
+                <div style="display: flex; gap: 10px;">
+                    <button class="ack-btn" style="margin-top: 0; padding: 10px 20px; background: #ef4444; font-size: 1em;" onclick="clearPolicies()">🗑️ 刪除紀錄</button>
+                    <button class="ack-btn" style="margin-top: 0; padding: 10px 20px; background: #10b981; font-size: 1em;" onclick="applyInsurance(this)">📊 匯出長期報告並申購</button>
+                </div>
             </div>
             <div id="policy-list" style="display: flex; flex-direction: column; gap: 10px;">
                 <div style="color: #94a3b8; font-size: 0.9em;">尚未申購任何保單。</div>
@@ -92,7 +95,10 @@ HTML_TEMPLATE = """
     </div>
 
     <div class="event-section">
-        <h2 style="margin-bottom: 20px;">📜 事件追溯紀錄 (Demo 專用展開)</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 style="margin: 0;">📜 事件追溯紀錄 (Demo 專用展開)</h2>
+            <button class="ack-btn" style="margin-top: 0; padding: 8px 16px; background: #ef4444; font-size: 0.9em;" onclick="clearEvents()">🗑️ 清空紀錄</button>
+        </div>
         <div class="event-list" id="event-list"></div>
     </div>
 
@@ -293,6 +299,28 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function clearPolicies() {
+            if (!confirm("確定要刪除保單服務的紀錄嗎？")) return;
+            try {
+                await fetch(`http://${window.location.hostname}:5002/api/insurance/clear_policies`, { method: 'POST' });
+                fetchPolicies();
+                alert("已刪除保單紀錄");
+            } catch(e) {
+                alert("刪除失敗：" + e);
+            }
+        }
+
+        async function clearEvents() {
+            if (!confirm("確定要清空事件追溯紀錄嗎？")) return;
+            try {
+                await fetch(`http://${window.location.hostname}:5002/api/clear_events`, { method: 'POST' });
+                document.getElementById('event-list').innerHTML = '';
+                alert("已清空事件紀錄");
+            } catch(e) {
+                alert("清空失敗：" + e);
+            }
+        }
+
         let seenSettledClaims = new Set();
         async function fetchClaims() {
             try {
@@ -334,7 +362,10 @@ HTML_TEMPLATE = """
                 const myPolicies = policies.filter(p => p.uid === TARGET_UID);
                 const listDiv = document.getElementById('policy-list');
                 
-                if (myPolicies.length === 0) return;
+                if (myPolicies.length === 0) {
+                    listDiv.innerHTML = '<div style="color: #94a3b8; font-size: 0.9em;">尚未申購任何保單。</div>';
+                    return;
+                }
                 
                 let html = '';
                 myPolicies.forEach(p => {
