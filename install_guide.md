@@ -41,7 +41,7 @@ python -m venv venv
 Windows PowerShell 預設可能會阻擋外部指令碼的執行。請執行以下指令，暫時允許當前視窗執行本機的虛擬環境啟動指令碼：
 
 ```bash
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
 ### 5. 啟動虛擬環境
@@ -76,9 +76,3 @@ pip install -r requirements.txt
 ```bash
 deactivate
 ```
-
----
-
-💡 **常見問題與備註**：
-- 若在啟動虛擬環境時遇到權限錯誤，請確認步驟 4 的 `Set-ExecutionPolicy` 指令是否已在當前的 PowerShell 視窗中成功執行。
-- 安裝相依套件時請保持網路連線穩定；若遇到下載超時，可嘗試重新執行安裝套件指令。
