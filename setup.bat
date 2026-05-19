@@ -5,6 +5,8 @@ echo =======================================
 echo    SIS 專案 - 自動建置環境腳本
 echo =======================================
 
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
 echo [1/3] 正在建立虛擬環境 (venv)...
 python -m venv venv
 
