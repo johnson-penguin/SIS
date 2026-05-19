@@ -31,5 +31,9 @@ echo.
 echo Closing specific process windows...
 taskkill /F /FI "WINDOWTITLE eq Single UE Process*" >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq Edge Server Process*" >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq Web Monitoring Station UI*" >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq Web UE UI*" >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq Party UI*" >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq Insurance UI*" >nul 2>&1
 
 :: (已移除 pause，視窗將會自動關閉)
